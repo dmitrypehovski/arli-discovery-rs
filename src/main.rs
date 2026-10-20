@@ -13,6 +13,7 @@ mod caps;
 mod card;
 mod lists;
 mod psi;
+mod pull;
 mod state;
 
 use std::collections::HashMap;
@@ -987,9 +988,31 @@ fn main() {
         "city:sf".to_string(),
         "role:founder".to_string(),
     ];
+    let mut pull_room = String::new();
+    let mut pull_kind = "supply".to_string();
+    let mut pull_city = String::new();
+    let mut pull_headline = String::new();
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
+            // An agent with no address it can be reached at: it calls the room instead and answers through the
+            // poll it holds open. The room cannot dial it, and says so rather than pretending.
+            "--pull-room" => {
+                pull_room = args.get(index + 1).cloned().unwrap_or_default();
+                index += 2;
+            }
+            "--kind" => {
+                pull_kind = args.get(index + 1).cloned().unwrap_or(pull_kind);
+                index += 2;
+            }
+            "--city" => {
+                pull_city = args.get(index + 1).cloned().unwrap_or_default();
+                index += 2;
+            }
+            "--headline" => {
+                pull_headline = args.get(index + 1).cloned().unwrap_or_default();
+                index += 2;
+            }
             "--port" => {
                 port = args.get(index + 1).and_then(|value| value.parse().ok()).unwrap_or(port);
                 index += 2;
@@ -1046,6 +1069,12 @@ fn main() {
         }
     };
     println!("arli-discovery-rs listening on http://{}", address);
+    if !pull_room.trim().is_empty() {
+        let room = pull_room.trim().trim_end_matches('/').to_string();
+        let state_for_pull = Arc::clone(&state);
+        println!("registering with {} by calling it: this agent has no address and does not need one", room);
+        std::thread::spawn(move || pull::run(&room, state_for_pull, pull_kind, pull_city, pull_headline));
+    }
     for request in server.incoming_requests() {
         let state = Arc::clone(&state);
         std::thread::spawn(move || handle(&state, request));
