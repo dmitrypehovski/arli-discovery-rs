@@ -9,8 +9,12 @@ than copied from the reference implementation, and the reference conformance sui
 
 - The reference suite has 30 checks over 26 methods. This implementation passes all 30
   (`result: conformant`), run against two instances of this binary on 2026-10-20.
-- The evidence envelopes, the card signature, the opening rules, the turn grammar, the registry,
-  retention, claim relay and the blind-RSA matching flow are all implemented here.
+- The evidence envelopes, the card signature, the opening rules, the turn grammar, the witness step
+  that lets two machines negotiate, the registry, retention, claim relay and the blind-RSA matching
+  flow are all implemented here.
+- Extension 1.2.0. This implementation is what the network test drives as the counterparty: a Python
+  service connects this agent by its address, verifies its card, and matches against it over the
+  wire, with each side recording the other's turns by witness.
 - Claim issuance is deliberately absent, exactly as in the reference: issuing verified statements
   about other people's features is a legal decision, not a code decision. The implementation relays
   and verifies statements made by others and issues none of its own.
