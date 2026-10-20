@@ -16,6 +16,7 @@ mod psi;
 mod state;
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::env;
 use std::sync::{Arc, Mutex};
 
@@ -226,10 +227,69 @@ fn apply_turn(negotiation: &mut Negotiation, seat: &str, action: &str, negotiati
 }
 
 
+/// The bucket space this agent counts in, read once from the taxonomy file the deployment names.
+///
+/// No file means no space: the profile is then empty and named empty, so a room asks this agent on every
+/// search instead of skipping it. Guessing a bucket would be a wrong skip, which is worse than a slow search.
+fn bucket_space() -> (Option<HashMap<String, String>>, String) {
+    static SPACE: OnceLock<(Option<HashMap<String, String>>, String)> = OnceLock::new();
+    SPACE
+        .get_or_init(|| {
+            let path = std::env::var("ARLI_TAXONOMY").unwrap_or_default();
+            if path.is_empty() || !std::path::Path::new(&path).is_file() {
+                return (None, String::new());
+            }
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(_) => return (None, String::new()),
+            };
+            let parsed: Value = match serde_json::from_str(&text) {
+                Ok(value) => value,
+                Err(_) => return (None, String::new()),
+            };
+            let mut map: HashMap<String, String> = HashMap::new();
+            if let Some(object) = parsed.as_object() {
+                for (category, node) in object {
+                    if let Some(subcategories) = node.get("subcategories").and_then(|value| value.as_object()) {
+                        for slug in subcategories.keys() {
+                            map.insert(slug.clone(), category.clone());
+                        }
+                    }
+                }
+            }
+            (Some(map), format!("taxonomy:{}", path))
+        })
+        .clone()
+}
+
+
 fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Value, (String, String)> {
     match method {
         "agent/card" => Ok(json!({"card": state.card})),
         "arli/capabilities" => Ok(caps::capability_document()),
+        // What this agent publishes about itself: buckets, never items. The bucket space is named because
+        // two spaces are not comparable, and an agent whose items cannot be placed must not look like one
+        // with nothing to offer.
+        "arli/profile" => {
+            let (space, space_name) = bucket_space();
+            let mut buckets: HashMap<String, i64> = HashMap::new();
+            if let Some(map) = space {
+                for feature in &state.features {
+                    let slug = feature.split_once(':').map(|(_, value)| value).unwrap_or(feature.as_str());
+                    if let Some(category) = map.get(slug) {
+                        *buckets.entry(category.clone()).or_insert(0) += 1;
+                    }
+                }
+            }
+            Ok(json!({
+                "buckets": buckets,
+                "bucket_space": space_name,
+                "kind": "",
+                "city": "",
+                "feature_count": state.features.len(),
+                "note": "No item value is in this answer. A search still runs a real exchange; the bucket only decides who is worth one."
+            }))
+        }
 
         "arli/registry/status" => Ok(json!({"registry": state.registry.to_json()})),
         "arli/registry/register" => {

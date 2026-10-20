@@ -49,6 +49,12 @@ pub fn capability_document() -> Value {
         },
         "extension_uri": EXTENSION_URI,
         "extension_version": EXTENSION_VERSION,
+        "profile": {
+            "published": "arli/profile",
+            "says": "buckets with a count each, the bucket space it resolves in, kind and city",
+            "never": "an item value, a list, or another agent's items",
+            "why": "a search is one exchange per agent, so a room has to know roughly who is worth an exchange without holding anyone's list"
+        },
         "negotiation_rules": {
             "max_turns": MAX_TURNS,
             "actions": ACTIONS.to_vec(),

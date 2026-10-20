@@ -6,7 +6,7 @@
 //! says so, and that is the interesting case.
 
 pub const EXTENSION_URI: &str = "https://arliwork.com/a2a/extensions/arli.discovery.v1";
-pub const EXTENSION_VERSION: &str = "1.6.0";
+pub const EXTENSION_VERSION: &str = "1.7.0";
 
 pub const EFFECT_KEYS: [&str; 7] = [
     "mutates_artifact",
@@ -132,9 +132,10 @@ pub const PROVENANCE: [&str; 3] = ["human", "organisation", "synthetic"];
 pub const FEATURE_CAP: usize = 64;
 
 /// The surface, in the order the text lists it. One list, and every binding must agree with it.
-pub const METHOD_NAMES: [&str; 28] = [
+pub const METHOD_NAMES: [&str; 29] = [
     "agent/card",
     "arli/capabilities",
+    "arli/profile",
     "arli/commitments",
     "arli/match",
     "arli/psi/keys",
