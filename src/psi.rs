@@ -7,6 +7,7 @@
 //! holder learns how many values were submitted, which is stated as a limit in the text.
 
 use num_bigint::{BigInt, BigUint, RandBigInt};
+use std::collections::HashMap;
 use num_traits::{One, Zero};
 use rand::thread_rng;
 use sha2::{Digest, Sha256};
@@ -17,6 +18,68 @@ use sha2::{Digest, Sha256};
 // RSA; the strength of the key is a separate decision, and 2048 bits matches the reference.
 pub const MODULUS_BITS: usize = 2048;
 pub const EXPONENT: u64 = 65537;
+pub const DEFAULT_EPOCH_SECONDS: u64 = 3600;
+
+pub fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// One key for an epoch, with our own tokens computed once and reused.
+///
+/// Why an epoch and not a key per session: making a key and recomputing signatures over our own list for
+/// every seeker was the cost, and measurement named which half mattered. Signing the seeker's blinded
+/// values stays per exchange; the token table does not. An epoch must expire, and its tokens must not
+/// outlive it, because a table that lives for ever is a dictionary an attacker accumulates against.
+pub struct EpochKey {
+    pub id: String,
+    pub key: RsaKey,
+    pub created_at: u64,
+    pub ttl_seconds: u64,
+    tokens: HashMap<String, BigUint>,
+}
+
+impl EpochKey {
+    pub fn new(ttl_seconds: u64, ordinal: u64) -> EpochKey {
+        let created_at = now_seconds();
+        EpochKey {
+            id: format!("ep-{:x}{:x}", created_at, ordinal),
+            key: RsaKey::generate(),
+            created_at,
+            ttl_seconds,
+            tokens: HashMap::new(),
+        }
+    }
+
+    pub fn expired(&self, now: u64) -> bool {
+        now.saturating_sub(self.created_at) >= self.ttl_seconds
+    }
+
+    pub fn seconds_left(&self, now: u64) -> u64 {
+        self.ttl_seconds.saturating_sub(now.saturating_sub(self.created_at))
+    }
+
+    /// Signed tokens over our own list: computed once per epoch, then reused for every seeker.
+    pub fn tokens_for(&mut self, features: &[String]) -> Vec<BigUint> {
+        let mut out = Vec::with_capacity(features.len());
+        for feature in features {
+            if let Some(existing) = self.tokens.get(feature) {
+                out.push(existing.clone());
+                continue;
+            }
+            let signed = token(&feature_hash(feature, &self.key.n), &self.key.d, &self.key.n);
+            self.tokens.insert(feature.clone(), signed.clone());
+            out.push(signed);
+        }
+        out
+    }
+
+    pub fn cached_tokens(&self) -> usize {
+        self.tokens.len()
+    }
+}
 
 pub struct RsaKey {
     pub n: BigUint,

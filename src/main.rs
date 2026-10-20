@@ -37,7 +37,9 @@ use state::{Claim, Claims, Registry, Retention};
 pub struct AgentState {
     pub name: String,
     pub features: Vec<String>,
-    pub psi_holder: HashMap<String, psi::RsaKey>,
+    pub epoch: Option<psi::EpochKey>,
+    pub psi_issued: HashMap<String, String>,
+    pub epoch_ordinal: u64,
     pub psi_applicant: HashMap<String, (Vec<String>, Vec<num_bigint::BigUint>)>,
     // The identity method must not become a signing oracle: one signed nonce per address and
     // purpose per minute. The address comes from the connection, the purpose from the caller.
@@ -359,15 +361,33 @@ fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Valu
         "arli/psi/keys" => {
             require(params, "session_id")?;
             let session = params["session_id"].as_str().unwrap_or_default().to_string();
-            let key = psi::RsaKey::generate();
-            let response = json!({
+            let now = psi::now_seconds();
+            let ttl = epoch_seconds();
+            state.epoch_ordinal += 1;
+            if state.epoch.as_ref().map(|e| e.expired(now)).unwrap_or(true) {
+                let ordinal = state.epoch_ordinal;
+                state.epoch = Some(psi::EpochKey::new(ttl, ordinal));
+            }
+            // The key lasts an epoch, and the session is bound to the epoch that issued it.
+            let (epoch_id, n_hex, e_hex, seconds_left) = {
+                let epoch = state.epoch.as_ref().expect("epoch just ensured");
+                (
+                    epoch.id.clone(),
+                    psi::to_hex(&epoch.key.n),
+                    psi::to_hex(&epoch.key.e),
+                    epoch.seconds_left(now),
+                )
+            };
+            state.psi_issued.insert(session, epoch_id.clone());
+            Ok(json!({
                 "scheme": "closed_blind_rsa",
                 "feature_cap": FEATURE_CAP,
-                "n": psi::to_hex(&key.n),
-                "e": psi::to_hex(&key.e)
-            });
-            state.psi_holder.insert(session, key);
-            Ok(response)
+                "n": n_hex,
+                "e": e_hex,
+                "epoch_id": epoch_id,
+                "epoch_expires_in_seconds": seconds_left,
+                "note": "the private exponent never leaves this agent; the key lasts one epoch and then expires"
+            }))
         }
         "arli/psi/commit" => {
             for field in ["session_id", "peer_name", "n", "e"] {
@@ -406,31 +426,56 @@ fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Valu
                     &format!("{} values, cap is {}", values.len(), FEATURE_CAP),
                 ));
             }
-            let key = match state.psi_holder.get(&session) {
-                Some(key) => key,
+            let now = psi::now_seconds();
+            if state.epoch.as_ref().map(|e| e.expired(now)).unwrap_or(true) {
+                return Err(refusal(
+                    "missing_private_key",
+                    "the epoch that issued this session's key has expired; keys are per epoch, not for ever",
+                ));
+            }
+            let epoch_id = state
+                .epoch
+                .as_ref()
+                .map(|e| e.id.clone())
+                .unwrap_or_default();
+            match state.psi_issued.get(&session) {
                 None => {
                     return Err(refusal(
-                        "missing_pair_key",
-                        "no holder key for this session",
+                        "missing_private_key",
+                        "no key was issued for this session yet",
                     ))
                 }
-            };
+                Some(issued) if issued != &epoch_id => {
+                    return Err(refusal(
+                        "missing_private_key",
+                        "the epoch that issued this session's key has expired; keys are per epoch, not for ever",
+                    ))
+                }
+                Some(_) => {}
+            }
+            let features = state.features.clone();
+            let epoch = state.epoch.as_mut().expect("epoch checked above");
+            let d = epoch.key.d.clone();
+            let n = epoch.key.n.clone();
+            // Signing the seeker's values is per exchange and nobody else can do it for us; our own tokens
+            // come from the epoch table and are computed once for every seeker in this epoch.
             let signed: Vec<String> = values
                 .iter()
                 .map(|value| {
                     let blinded = psi::from_hex(value.as_str().unwrap_or_default());
-                    psi::to_hex(&psi::token(&blinded, &key.d, &key.n))
+                    psi::to_hex(&psi::token(&blinded, &d, &n))
                 })
                 .collect();
-            let holder_tokens: Vec<String> = state
-                .features
+            let holder_tokens: Vec<String> = epoch
+                .tokens_for(&features)
                 .iter()
-                .map(|feature| {
-                    let hashed = psi::feature_hash(feature, &key.n);
-                    psi::to_hex(&psi::token(&hashed, &key.d, &key.n))
-                })
+                .map(|value| psi::to_hex(value))
                 .collect();
-            Ok(json!({"signed": signed, "holder_tokens": holder_tokens}))
+            Ok(json!({
+                "epoch_id": epoch_id,
+                "signed": signed,
+                "holder_tokens": holder_tokens
+            }))
         }
         "arli/psi/finish" => {
             for field in ["session_id", "signed"] {
@@ -830,6 +875,14 @@ fn handle(state: &Shared, request: tiny_http::Request) {
     }
 }
 
+/// How long an epoch lasts. Overridable so the expiry can be exercised instead of believed.
+fn epoch_seconds() -> u64 {
+    std::env::var("ARLI_EPOCH_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(psi::DEFAULT_EPOCH_SECONDS)
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut port = 8841u16;
@@ -866,7 +919,9 @@ fn main() {
     let state: Shared = Arc::new(Mutex::new(AgentState {
         name,
         features,
-        psi_holder: HashMap::new(),
+        epoch: None,
+        psi_issued: HashMap::new(),
+        epoch_ordinal: 0,
         psi_applicant: HashMap::new(),
         peer: String::new(),
         identity_requests: HashMap::new(),
