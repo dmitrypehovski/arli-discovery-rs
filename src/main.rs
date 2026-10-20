@@ -257,7 +257,7 @@ fn bucket_space() -> (Option<HashMap<String, String>>, String) {
                     }
                 }
             }
-            (Some(map), format!("taxonomy:{}", path))
+            (Some(map), "arli-areas-v1".to_string())
         })
         .clone()
 }
@@ -271,6 +271,27 @@ fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Valu
         // two spaces are not comparable, and an agent whose items cannot be placed must not look like one
         // with nothing to offer.
         "arli/profile" => {
+            // Areas the owner states by hand, so an agent without the vocabulary can still be sifted instead
+            // of being asked on every search forever. Declared, and named as declared.
+            let declared: Vec<String> = std::env::var("ARLI_DECLARED_AREAS")
+                .unwrap_or_default()
+                .split(',')
+                .map(|area| area.trim().to_string())
+                .filter(|area| !area.is_empty())
+                .collect();
+            if !declared.is_empty() {
+                let buckets: HashMap<String, i64> = declared.iter().map(|a| (a.clone(), 1)).collect();
+                return Ok(json!({
+                    "buckets": buckets,
+                    "bucket_space": "arli-areas-v1",
+                    "declared": true,
+                    "declared_by": "the owner of this agent, without publishing any item",
+                    "kind": "",
+                    "city": "",
+                    "feature_count": state.features.len(),
+                    "note": "No item value is in this answer. A search still runs a real exchange; the bucket only decides who is worth one."
+                }));
+            }
             let (space, space_name) = bucket_space();
             let mut buckets: HashMap<String, i64> = HashMap::new();
             if let Some(map) = space {
@@ -284,6 +305,7 @@ fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Valu
             Ok(json!({
                 "buckets": buckets,
                 "bucket_space": space_name,
+                "declared": false,
                 "kind": "",
                 "city": "",
                 "feature_count": state.features.len(),
