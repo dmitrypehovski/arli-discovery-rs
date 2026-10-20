@@ -6,7 +6,7 @@
 //! says so, and that is the interesting case.
 
 pub const EXTENSION_URI: &str = "https://arliwork.com/a2a/extensions/arli.discovery.v1";
-pub const EXTENSION_VERSION: &str = "1.3.0";
+pub const EXTENSION_VERSION: &str = "1.4.0";
 
 pub const EFFECT_KEYS: [&str; 7] = [
     "mutates_artifact",

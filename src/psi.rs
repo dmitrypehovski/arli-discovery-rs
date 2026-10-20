@@ -118,8 +118,47 @@ impl RsaKey {
     }
 }
 
+/// The published vocabulary: what counts as the same thing on both sides.
+///
+/// A need and an offer of the same commodity have to meet, so a goods namespace reduces to its value
+/// and everything else keeps its namespace. Written from the text, not copied from the other
+/// implementation: two implementations that agree only because one copied the other prove nothing.
+pub fn canonical_token(feature: &str) -> String {
+    let text = feature.trim();
+    let (namespace, value) = match text.split_once(':') {
+        Some((head, tail)) => (head.trim().to_lowercase(), tail.trim().to_lowercase()),
+        None => return clean(text),
+    };
+    let value = clean(&value);
+    const GOODS: [&str; 8] =
+        ["need", "want", "offer", "supply", "skill", "service", "commodity", "product"];
+    if GOODS.contains(&namespace.as_str()) {
+        value
+    } else {
+        format!("{}:{}", namespace, value)
+    }
+}
+
+fn clean(text: &str) -> String {
+    let lowered = text.trim().to_lowercase();
+    let mut out = String::with_capacity(lowered.len());
+    let mut pending_separator = false;
+    for character in lowered.chars() {
+        if character.is_whitespace() || character == '_' || character == '-' {
+            pending_separator = !out.is_empty();
+            continue;
+        }
+        if pending_separator {
+            out.push('-');
+            pending_separator = false;
+        }
+        out.push(character);
+    }
+    out
+}
+
 pub fn feature_hash(feature: &str, n: &BigUint) -> BigUint {
-    let digest = Sha256::digest(feature.to_lowercase().trim().as_bytes());
+    let digest = Sha256::digest(canonical_token(feature).as_bytes());
     BigUint::from_bytes_be(&digest) % n
 }
 
