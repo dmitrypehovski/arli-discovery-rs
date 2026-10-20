@@ -6,7 +6,7 @@
 //! says so, and that is the interesting case.
 
 pub const EXTENSION_URI: &str = "https://arliwork.com/a2a/extensions/arli.discovery.v1";
-pub const EXTENSION_VERSION: &str = "1.2.0";
+pub const EXTENSION_VERSION: &str = "1.3.0";
 
 pub const EFFECT_KEYS: [&str; 7] = [
     "mutates_artifact",
@@ -110,12 +110,14 @@ pub const REGISTRY_REJECTIONS: [&str; 7] = [
 pub const KEY_REVOCATION_REASONS: [&str; 4] =
     ["rotated", "compromised", "principal_request", "policy"];
 
-pub const CALL_REJECTIONS: [&str; 5] = [
+pub const CALL_REJECTIONS: [&str; 7] = [
     "missing_field",
     "unknown_method",
     "parse_error",
     "bad_type",
-    "not_implemented",
+    "nonce_too_short",
+    "purpose_required",
+    "rate_limited",
 ];
 
 pub const CONFIDENCE_VALUES: [&str; 4] = ["observed", "derived", "claimed", "unknown"];
@@ -127,7 +129,7 @@ pub const PROVENANCE: [&str; 3] = ["human", "organisation", "synthetic"];
 pub const FEATURE_CAP: usize = 64;
 
 /// The surface, in the order the text lists it. One list, and every binding must agree with it.
-pub const METHOD_NAMES: [&str; 27] = [
+pub const METHOD_NAMES: [&str; 28] = [
     "agent/card",
     "arli/capabilities",
     "arli/commitments",
@@ -154,6 +156,7 @@ pub const METHOD_NAMES: [&str; 27] = [
     "arli/negotiation/open",
     "arli/negotiation/turn",
     "arli/negotiation/witness",
+    "arli/identity/sign",
     "arli/opportunity/decide",
 ];
 

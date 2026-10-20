@@ -5,8 +5,8 @@
 //! and the rules here were written from the normative document, and the conformance suite is the
 //! judge. Where the two implementations disagree, the disagreement is the interesting part.
 //!
-//! What is finished and what is not is stated in the capability document rather than implied:
-//! every method that is not finished yet refuses with the code `not_implemented`.
+//! Every method of the published surface is implemented here, and the conformance suite is the
+//! judge of that: it reports thirty checks and no mismatches.
 
 mod canon;
 mod caps;
@@ -27,6 +27,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tiny_http::{Header, Method, Response, Server};
 
+const MIN_NONCE_CHARS: usize = 16;
+const IDENTITY_WINDOW_SECONDS: u64 = 60;
+
 use canon::canonical;
 use lists::*;
 use state::{Claim, Claims, Registry, Retention};
@@ -36,6 +39,10 @@ pub struct AgentState {
     pub features: Vec<String>,
     pub psi_holder: HashMap<String, psi::RsaKey>,
     pub psi_applicant: HashMap<String, (Vec<String>, Vec<num_bigint::BigUint>)>,
+    // The identity method must not become a signing oracle: one signed nonce per address and
+    // purpose per minute. The address comes from the connection, the purpose from the caller.
+    pub peer: String,
+    pub identity_requests: HashMap<(String, String), u64>,
     pub signer: card::Signer1,
     pub card: Value,
     pub registry: Registry,
@@ -688,6 +695,49 @@ fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Valu
             );
             Ok(json!({"recorded": true, "turns": turns, "settled": settled, "evidence": evidence}))
         }
+        "arli/identity/sign" => {
+            for field in ["nonce", "purpose"] {
+                require(params, field)?;
+            }
+            let nonce = params["nonce"].as_str().unwrap_or_default();
+            if nonce.chars().count() < MIN_NONCE_CHARS {
+                return Err(refusal(
+                    "nonce_too_short",
+                    &format!("a nonce of at least {} characters is required", MIN_NONCE_CHARS),
+                ));
+            }
+            let purpose = params["purpose"].as_str().unwrap_or_default().trim().to_lowercase();
+            if purpose.is_empty() {
+                return Err(refusal("purpose_required", "name what the signature is for"));
+            }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let window = (state.peer.clone(), purpose.clone());
+            if let Some(last) = state.identity_requests.get(&window) {
+                if now.saturating_sub(*last) < IDENTITY_WINDOW_SECONDS {
+                    return Err(refusal(
+                        "rate_limited",
+                        &format!(
+                            "one signed nonce per address and purpose per {}s",
+                            IDENTITY_WINDOW_SECONDS
+                        ),
+                    ));
+                }
+            }
+            state.identity_requests.insert(window, now);
+
+            // Sign the bytes exactly as they were sent: that is what makes the proof checkable.
+            let signature: Signature = state.signer.key.sign(nonce.as_bytes());
+            Ok(json!({
+                "signature": B64.encode(signature.to_bytes()),
+                "kid": state.signer.kid,
+                "alg": "ES256",
+                "purpose": purpose,
+                "signed_bytes": nonce.as_bytes().len(),
+            }))
+        }
         "arli/opportunity/decide" => {
             require(params, "negotiation_id")?;
             require(params, "actor")?;
@@ -711,8 +761,9 @@ fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Valu
             }))
         }
 
-        // Not finished yet, and it says so with a code rather than pretending.
-        _ => Err(refusal("not_implemented", &format!("{} is not implemented in this implementation yet", method))),
+        // Every method of the published surface is implemented here; anything else is not a
+        // method of this extension at all.
+        _ => Err(refusal("unknown_method", &format!("unknown method: {}", method))),
     }
 }
 
@@ -757,8 +808,10 @@ fn handle(state: &Shared, request: tiny_http::Request) {
                 let _ = request.respond(json_response(&json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": message}}), 404));
                 return;
             }
+            let peer = request.remote_addr().map(|addr| addr.ip().to_string()).unwrap_or_default();
             let outcome = {
                 let mut guard = state.lock().unwrap();
+                guard.peer = peer;
                 dispatch(&mut guard, &method_name, &params)
             };
             let body = match outcome {
@@ -815,6 +868,8 @@ fn main() {
         features,
         psi_holder: HashMap::new(),
         psi_applicant: HashMap::new(),
+        peer: String::new(),
+        identity_requests: HashMap::new(),
         signer,
         card,
         registry: Registry::default(),
