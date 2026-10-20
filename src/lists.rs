@@ -6,7 +6,7 @@
 //! says so, and that is the interesting case.
 
 pub const EXTENSION_URI: &str = "https://arliwork.com/a2a/extensions/arli.discovery.v1";
-pub const EXTENSION_VERSION: &str = "1.1.0";
+pub const EXTENSION_VERSION: &str = "1.2.0";
 
 pub const EFFECT_KEYS: [&str; 7] = [
     "mutates_artifact",
@@ -30,7 +30,7 @@ pub const MAX_TURNS: u32 = 12;
 
 pub const ACTIONS: [&str; 4] = ["propose", "counter", "accept", "decline"];
 
-pub const TURN_REJECTIONS: [&str; 9] = [
+pub const TURN_REJECTIONS: [&str; 15] = [
     "not_a_seat",
     "unknown_action",
     "already_settled",
@@ -40,6 +40,12 @@ pub const TURN_REJECTIONS: [&str; 9] = [
     "seats_must_alternate",
     "accept_without_offer",
     "propose_over_offer",
+    "not_a_witness",
+    "witness_without_proof",
+    "witness_card_unverified",
+    "witness_seat_mismatch",
+    "witness_proof_invalid",
+    "witness_mismatch",
 ];
 
 pub const OPENING_REJECTIONS: [&str; 7] = [
@@ -121,7 +127,7 @@ pub const PROVENANCE: [&str; 3] = ["human", "organisation", "synthetic"];
 pub const FEATURE_CAP: usize = 64;
 
 /// The surface, in the order the text lists it. One list, and every binding must agree with it.
-pub const METHOD_NAMES: [&str; 26] = [
+pub const METHOD_NAMES: [&str; 27] = [
     "agent/card",
     "arli/capabilities",
     "arli/commitments",
@@ -147,6 +153,7 @@ pub const METHOD_NAMES: [&str; 26] = [
     "arli/claims/declare",
     "arli/negotiation/open",
     "arli/negotiation/turn",
+    "arli/negotiation/witness",
     "arli/opportunity/decide",
 ];
 

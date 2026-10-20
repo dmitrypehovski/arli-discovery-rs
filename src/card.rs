@@ -119,6 +119,41 @@ fn verify_with_jwk(body: &Value, jwk: &Value, protected: &str, signature: &str) 
     key.verify(signing_input.as_bytes(), &sig).map_err(|_| "signature does not verify".to_string())
 }
 
+/// The public key of the card's own signature header.
+///
+/// A card binds a key to a name, so a signature that verifies against this key belongs to whoever
+/// the card names. Used by the witness step, where that is the whole point.
+pub fn card_verifying_key(card: &Value) -> Option<VerifyingKey> {
+    let entries = card.get(SIGNED_FIELD).and_then(|v| v.as_array())?;
+    let entry = entries.first()?;
+    let protected = entry.get("protected").and_then(|v| v.as_str())?;
+    let header: Value = B64.decode(protected).ok().and_then(|raw| serde_json::from_slice(&raw).ok())?;
+    let jwk = header.get("jwk")?;
+    let x = B64.decode(jwk.get("x").and_then(|v| v.as_str())?).ok()?;
+    let y = B64.decode(jwk.get("y").and_then(|v| v.as_str())?).ok()?;
+    let mut sec1 = vec![0x04u8];
+    sec1.extend_from_slice(&x);
+    sec1.extend_from_slice(&y);
+    VerifyingKey::from_encoded_point(&p256::EncodedPoint::from_bytes(&sec1).ok()?).ok()
+}
+
+/// Verify an envelope signature: the body without the signature itself, signed with ES256.
+pub fn verify_envelope(envelope: &Value, key: &VerifyingKey) -> Result<(), String> {
+    let value = envelope
+        .get("signature")
+        .and_then(|entry| entry.get("value"))
+        .and_then(|text| text.as_str())
+        .ok_or_else(|| "envelope has no signature".to_string())?;
+    let raw = B64.decode(value).map_err(|error| format!("signature is not base64url: {}", error))?;
+    let signature = Signature::from_slice(&raw).map_err(|error| format!("bad signature: {}", error))?;
+    let mut body = envelope.clone();
+    if let Some(map) = body.as_object_mut() {
+        map.remove("signature");
+    }
+    key.verify(canon::canonical(&body).as_bytes(), &signature)
+        .map_err(|_| "signature does not match the envelope body".to_string())
+}
+
 /// Verify a card with the key from its own header. This is what any other party can do.
 pub fn verify_card_self(card: &Value) -> (bool, Vec<String>) {
     let entries = match card.get(SIGNED_FIELD).and_then(|v| v.as_array()) {

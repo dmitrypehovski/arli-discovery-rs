@@ -172,6 +172,46 @@ fn decide_opening(a: &Value, b: &Value, network: &str, admits_synthetic: bool, r
     None
 }
 
+/// The negotiation grammar, in one place: both the agent's own turn and a witnessed turn of the
+/// counterparty go through this, so the rules cannot drift between the two paths.
+fn apply_turn(negotiation: &mut Negotiation, seat: &str, action: &str, negotiation_id: &str) -> Result<(), (String, String)> {
+    if !contains(&ACTIONS, action) {
+        return Err(refusal("unknown_action", action));
+    }
+    if negotiation.settled {
+        return Err(refusal("already_settled", negotiation_id));
+    }
+    if !negotiation.seats.iter().any(|item| *item == seat) {
+        return Err(refusal(
+            "not_a_seat",
+            &format!("this negotiation seats {}, not {}", negotiation.seats.join(","), seat),
+        ));
+    }
+    if !negotiation.turns.is_empty() {
+        let last = negotiation.turns.last().map(|(s, _)| s.clone()).unwrap_or_default();
+        if last == seat {
+            return Err(refusal("seats_must_alternate", "the same seat cannot take two turns in a row"));
+        }
+        if action == "accept" {
+            let last_action = negotiation.turns.last().map(|(_, a)| a.clone()).unwrap_or_default();
+            if last_action != "propose" {
+                return Err(refusal("accept_without_offer", "accept is legal only right after a propose"));
+            }
+        }
+    } else if action == "accept" || action == "counter" {
+        return Err(refusal("first_turn_is_propose_or_decline", "the initiator owes the first turn"));
+    }
+    if negotiation.turns.len() as u32 >= MAX_TURNS {
+        return Err(refusal("turn_limit", "the turn limit is reached; the negotiation stays unsettled"));
+    }
+    if action == "accept" {
+        negotiation.settled = true;
+    }
+    negotiation.turns.push((seat.to_string(), action.to_string()));
+    Ok(())
+}
+
+
 fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Value, (String, String)> {
     match method {
         "agent/card" => Ok(json!({"card": state.card})),
@@ -541,51 +581,112 @@ fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Valu
             for field in ["negotiation_id", "seat", "action"] {
                 require(params, field)?;
             }
-            let negotiation_id = params["negotiation_id"].as_str().unwrap_or_default();
+            let negotiation_id = params["negotiation_id"].as_str().unwrap_or_default().to_string();
             let seat = params["seat"].as_str().unwrap_or_default().to_string();
             let action = params["action"].as_str().unwrap_or_default().to_string();
-            let negotiation = match state.negotiations.get_mut(negotiation_id) {
+            if seat != state.name {
+                return Err(refusal(
+                    "not_a_seat",
+                    &format!("this agent holds seat {}, not {}", state.name, seat),
+                ));
+            }
+            let negotiation = match state.negotiations.get_mut(&negotiation_id) {
                 Some(negotiation) => negotiation,
-                None => return Err(refusal("unknown_negotiation", &format!("unknown negotiation: {}", negotiation_id))),
+                None => {
+                    return Err(refusal(
+                        "unknown_negotiation",
+                        &format!("unknown negotiation: {}", negotiation_id),
+                    ))
+                }
             };
-            if !contains(&ACTIONS, &action) {
-                return Err(refusal("unknown_action", &action));
-            }
-            if negotiation.settled {
-                return Err(refusal("already_settled", negotiation_id));
-            }
-            if !negotiation.seats.iter().any(|item| *item == seat) {
-                return Err(refusal("not_a_seat", &format!("this agent holds seat {}, not {}", negotiation.seats.join(","), seat)));
-            }
-            if negotiation.turns.is_empty() {
-                if action == "accept" || action == "counter" {
-                    return Err(refusal("first_turn_is_propose_or_decline", "the initiator owes the first turn"));
-                }
-            } else {
-                let last = negotiation.turns.last().map(|(s, _)| s.clone()).unwrap_or_default();
-                if last == seat {
-                    return Err(refusal("seats_must_alternate", "the same seat cannot take two turns in a row"));
-                }
-                if action == "accept" {
-                    let last_action = negotiation.turns.last().map(|(_, a)| a.clone()).unwrap_or_default();
-                    if last_action != "propose" {
-                        return Err(refusal("accept_without_offer", "accept is legal only right after a propose"));
-                    }
-                    negotiation.settled = true;
-                }
-            }
-            if negotiation.turns.len() as u32 >= MAX_TURNS {
-                return Err(refusal("turn_limit", "the turn limit is reached; the negotiation stays unsettled"));
-            }
-            negotiation.turns.push((seat.clone(), action.clone()));
+            apply_turn(negotiation, &seat, &action, &negotiation_id)?;
+            let turns = negotiation.turns.len();
+            let settled = negotiation.settled;
             let evidence = envelope(
                 &state.signer,
                 "negotiation_turn",
                 json!({"negotiation_id": negotiation_id, "seat": seat, "action": action}),
-                json!({"turns": negotiation.turns.len(), "settled": negotiation.settled}),
-                vec!["The journal is shared by both seats; a turn is recorded once."],
+                json!({"turns": turns, "settled": settled}),
+                vec!["A turn is recorded once, in this agent's own journal."],
             );
-            Ok(json!({"accepted": true, "turns": negotiation.turns.len(), "settled": negotiation.settled, "evidence": evidence}))
+            Ok(json!({"accepted": true, "turns": turns, "settled": settled, "evidence": evidence}))
+        }
+        "arli/negotiation/witness" => {
+            for field in ["negotiation_id", "seat", "action", "proof", "card"] {
+                require(params, field)?;
+            }
+            let negotiation_id = params["negotiation_id"].as_str().unwrap_or_default().to_string();
+            let seat = params["seat"].as_str().unwrap_or_default().to_string();
+            let action = params["action"].as_str().unwrap_or_default().to_string();
+            if seat == state.name {
+                return Err(refusal(
+                    "not_a_witness",
+                    "an agent takes its own turns with the turn method; witnessing is for the other side",
+                ));
+            }
+            let proof = params.get("proof").cloned().unwrap_or(Value::Null);
+            if !proof.is_object() {
+                return Err(refusal("witness_without_proof", "the speaker's envelope is required"));
+            }
+            let card = params.get("card").cloned().unwrap_or(Value::Null);
+            if !card.is_object() {
+                return Err(refusal("witness_card_unverified", "the speaker's signed card is required"));
+            }
+            let (verified, reasons) = card::verify_card_self(&card);
+            if !verified {
+                return Err(refusal("witness_card_unverified", &reasons.join("; ")));
+            }
+            let card_name = card.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            if card_name != seat {
+                return Err(refusal(
+                    "witness_seat_mismatch",
+                    &format!("the card names {}, the witnessed seat is {}", card_name, seat),
+                ));
+            }
+            let key = match card::card_verifying_key(&card) {
+                Some(key) => key,
+                None => {
+                    return Err(refusal(
+                        "witness_card_unverified",
+                        "the card carries no usable public key",
+                    ))
+                }
+            };
+            if let Err(reason) = card::verify_envelope(&proof, &key) {
+                return Err(refusal("witness_proof_invalid", &reason));
+            }
+            let recorded = proof.get("parameters").cloned().unwrap_or_else(|| json!({}));
+            let recorded_seat = recorded.get("seat").and_then(|v| v.as_str()).unwrap_or_default();
+            let recorded_action = recorded.get("action").and_then(|v| v.as_str()).unwrap_or_default();
+            if recorded_seat != seat || recorded_action != action {
+                return Err(refusal(
+                    "witness_mismatch",
+                    &format!(
+                        "the envelope records seat {} and action {}, the request names {} and {}",
+                        recorded_seat, recorded_action, seat, action
+                    ),
+                ));
+            }
+            let negotiation = match state.negotiations.get_mut(&negotiation_id) {
+                Some(negotiation) => negotiation,
+                None => {
+                    return Err(refusal(
+                        "unknown_negotiation",
+                        &format!("unknown negotiation: {}", negotiation_id),
+                    ))
+                }
+            };
+            apply_turn(negotiation, &seat, &action, &negotiation_id)?;
+            let turns = negotiation.turns.len();
+            let settled = negotiation.settled;
+            let evidence = envelope(
+                &state.signer,
+                "negotiation_witness",
+                json!({"negotiation_id": negotiation_id, "seat": seat, "action": action}),
+                json!({"turns": turns, "settled": settled}),
+                vec!["A witnessed turn is the counterparty's own, checked against its signed card."],
+            );
+            Ok(json!({"recorded": true, "turns": turns, "settled": settled, "evidence": evidence}))
         }
         "arli/opportunity/decide" => {
             require(params, "negotiation_id")?;
