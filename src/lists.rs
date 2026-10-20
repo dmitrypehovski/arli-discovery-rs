@@ -6,7 +6,7 @@
 //! says so, and that is the interesting case.
 
 pub const EXTENSION_URI: &str = "https://arliwork.com/a2a/extensions/arli.discovery.v1";
-pub const EXTENSION_VERSION: &str = "1.5.0";
+pub const EXTENSION_VERSION: &str = "1.6.0";
 
 pub const EFFECT_KEYS: [&str; 7] = [
     "mutates_artifact",
@@ -27,6 +27,9 @@ pub const AVAILABILITY_CODES: [&str; 5] = [
 ];
 
 pub const MAX_TURNS: u32 = 12;
+
+// Refusals of the decision call, which is a different method from a turn: clause 6.17 names this list.
+pub const DECISION_REJECTIONS: [&str; 2] = ["not_agreed", "not_a_seat"];
 
 pub const ACTIONS: [&str; 4] = ["propose", "counter", "accept", "decline"];
 

@@ -53,6 +53,7 @@ pub fn capability_document() -> Value {
             "max_turns": MAX_TURNS,
             "actions": ACTIONS.to_vec(),
             "turn_rejections": TURN_REJECTIONS.to_vec(),
+            "decision_rejections": DECISION_REJECTIONS.to_vec(),
             "opening_rejections": OPENING_REJECTIONS.to_vec()
         },
         "intersection": {

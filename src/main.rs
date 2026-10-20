@@ -58,6 +58,10 @@ pub struct Negotiation {
     pub seats: Vec<String>,
     pub turns: Vec<(String, String)>,
     pub settled: bool,
+    // Which way it settled, or nothing while it is open. The other side has to be able to read this from the
+    // response: a peer that only hears "settled" cannot tell an agreement from a refusal, and the two live
+    // implementations disagreed about exactly this until the text named the field (clause 6.13).
+    pub outcome: Option<String>,
     pub closed: bool,
 }
 
@@ -213,8 +217,9 @@ fn apply_turn(negotiation: &mut Negotiation, seat: &str, action: &str, negotiati
     if negotiation.turns.len() as u32 >= MAX_TURNS {
         return Err(refusal("turn_limit", "the turn limit is reached; the negotiation stays unsettled"));
     }
-    if action == "accept" {
+    if action == "accept" || action == "decline" {
         negotiation.settled = true;
+        negotiation.outcome = Some(if action == "accept" { "agreed".to_string() } else { "declined".to_string() });
     }
     negotiation.turns.push((seat.to_string(), action.to_string()));
     Ok(())
@@ -618,7 +623,7 @@ fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Valu
             let initiator = peers.first().cloned().unwrap_or_default();
             state.negotiations.insert(
                 negotiation_id.clone(),
-                Negotiation { seats: peers, turns: Vec::new(), settled: false, closed: false },
+                Negotiation { seats: peers, turns: Vec::new(), settled: false, outcome: None, closed: false },
             );
             let evidence = envelope(
                 &state.signer,
@@ -653,15 +658,22 @@ fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Valu
             };
             apply_turn(negotiation, &seat, &action, &negotiation_id)?;
             let turns = negotiation.turns.len();
-            let settled = negotiation.settled;
+            let outcome = negotiation.outcome.clone();
             let evidence = envelope(
                 &state.signer,
                 "negotiation_turn",
                 json!({"negotiation_id": negotiation_id, "seat": seat, "action": action}),
-                json!({"turns": turns, "settled": settled}),
+                json!({"outcome": outcome, "turn_count": turns, "turn_limit": MAX_TURNS}),
                 vec!["A turn is recorded once, in this agent's own journal."],
             );
-            Ok(json!({"accepted": true, "turns": turns, "settled": settled, "evidence": evidence}))
+            // The response fields are the text's (clause 6.13), not this implementation's invention: a caller
+            // reads the outcome, and null means the negotiation is still open.
+            Ok(json!({
+                "outcome": outcome,
+                "turn_count": turns,
+                "turns_remaining": MAX_TURNS.saturating_sub(turns as u32),
+                "evidence": evidence
+            }))
         }
         "arli/negotiation/witness" => {
             for field in ["negotiation_id", "seat", "action", "proof", "card"] {
@@ -792,8 +804,9 @@ fn dispatch(state: &mut AgentState, method: &str, params: &Value) -> Result<Valu
                 Some(negotiation) => negotiation,
                 None => return Err(refusal("unknown_negotiation", &format!("unknown opportunity: {}", negotiation_id))),
             };
-            if !negotiation.settled {
-                return Err(refusal("not_settled", "humans decide only after the agents agreed"));
+            // A refusal is not an agreement: consent is only considered after an agreed outcome (clause 6.14).
+            if negotiation.outcome.as_deref() != Some("agreed") {
+                return Err(refusal("not_agreed", "humans decide only after the agents agreed"));
             }
             let actor = params["actor"].as_str().unwrap_or_default();
             if !negotiation.seats.iter().any(|item| *item == actor) {
@@ -906,7 +919,16 @@ fn main() {
             "--features" => {
                 features = args
                     .get(index + 1)
-                    .map(|value| value.split(',').map(|part| part.trim().to_string()).collect())
+                    .map(|value| {
+                        // An empty flag value is an empty list, not a list holding one empty string: the
+                        // second reads as a feature nobody wrote, and the conformance kit caught it as an
+                        // empty match at the floor check.
+                        value
+                            .split(',')
+                            .map(|part| part.trim().to_string())
+                            .filter(|part| !part.is_empty())
+                            .collect()
+                    })
                     .unwrap_or(features);
                 index += 2;
             }
