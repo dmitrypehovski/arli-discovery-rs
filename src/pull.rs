@@ -18,6 +18,10 @@ use serde_json::{json, Value};
 use crate::{dispatch, AgentState};
 
 const RETRY_SECONDS: u64 = 3;
+/// Our own agent signs one nonce per address and purpose per minute, so a registration repeated inside that
+/// window is refused by the agent the loop is registering. Waiting is the fix; hammering it turns a delay into
+/// a flood of refusals.
+const RATE_WAIT_SECONDS: u64 = 61;
 const POLL_TIMEOUT_SECONDS: u64 = 60;
 
 fn locked(state: &Arc<Mutex<AgentState>>, method: &str, params: &Value) -> Result<Value, String> {
@@ -71,8 +75,9 @@ pub fn run(room: &str, state: Arc<Mutex<AgentState>>, kind: String, city: String
     loop {
         match register(room, &state, &kind, &city, &headline) {
             Err(error) => {
-                eprintln!("pull: {}", error);
-                std::thread::sleep(Duration::from_secs(RETRY_SECONDS));
+                let wait = if error.contains("rate_limited") { RATE_WAIT_SECONDS } else { RETRY_SECONDS };
+                eprintln!("pull: {} (waiting {}s)", error, wait);
+                std::thread::sleep(Duration::from_secs(wait));
                 continue;
             }
             Ok(token) => {
